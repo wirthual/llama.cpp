@@ -2708,6 +2708,12 @@ class Llama4Model(LlamaModel):
         return super().modify_tensors(data_torch, name, bid)
 
 
+@ModelBase.register("MobileLLMP1ForCausalLM")
+class MobileLLMP1Model(Llama4Model):
+    model_arch = gguf.MODEL_ARCH.MOBILELLMPRO
+    undo_permute = False
+
+
 @ModelBase.register("Llama4ForConditionalGeneration")
 class Llama4VisionModel(MmprojModel):
     def set_gguf_parameters(self):
