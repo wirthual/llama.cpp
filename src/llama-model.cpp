@@ -2182,36 +2182,16 @@ void llama_model::load_hparams(llama_model_loader & ml) {
             } break;
             case LLM_ARCH_MOBILELLMPRO:
                         {
+
                             ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
-                            ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,  hparams.n_ff_exp);
-                            ml.get_key(LLM_KV_INTERLEAVE_MOE_LAYER_STEP,   hparams.n_moe_layer_step);
 
-                            const bool found_swa = ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa, false);
-                            if (found_swa && hparams.n_swa == 0) {
-                                hparams.swa_type             = LLAMA_SWA_TYPE_NONE;
-                                hparams.n_no_rope_layer_step = hparams.n_layer; // always use rope
-                            } else {
-                                hparams.swa_type      = LLAMA_SWA_TYPE_CHUNKED;
-                                hparams.n_swa         = 8192;
-                                hparams.set_swa_pattern(4);   // pattern: 3 chunked - 1 full
-                            }
+                            type = LLM_TYPE_1B;
+                            hparams.swa_type      = LLAMA_SWA_TYPE_CHUNKED;
+                            hparams.n_swa         = 512;
+                            hparams.set_swa_pattern(4);   // pattern: 3 chunked - 1 full
 
-                            switch (hparams.n_expert) {
-                                case 0: {
-                                    // MobileLLM (no MoE)
-                                    switch (hparams.n_embd) {
-                                        case 2048: type = LLM_TYPE_140M; break;
-                                        case 4096: type = LLM_TYPE_360M; break;
-                                        case 6144: type = LLM_TYPE_950M; break;
-                                        default:   type = LLM_TYPE_UNKNOWN;
-                                    }
-                                } break;
-                                case 16:  type = LLM_TYPE_17B_16E; break;
-                                case 128: type = LLM_TYPE_17B_128E; break;
-                                default:  type = LLM_TYPE_UNKNOWN;
-                            }
 
-                            hparams.use_kq_norm = type != LLM_TYPE_17B_128E;
+                            hparams.use_kq_norm = false;
                         } break;
         default: throw std::runtime_error("unsupported model architecture");
     }
@@ -6335,7 +6315,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
                     }
                 } break;
-case LLM_ARCH_MOBILELLMPRO:
+                case LLM_ARCH_MOBILELLMPRO:
                 {
                     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
 
@@ -6349,8 +6329,6 @@ case LLM_ARCH_MOBILELLMPRO:
                     }
 
                     for (int i = 0; i < n_layer; ++i) {
-                        bool is_moe_layer = hparams.n_expert > 0 && hparams.n_moe_layer_step > 0 && (i + 1) % hparams.n_moe_layer_step == 0;
-
                         auto & layer = layers[i];
 
                         layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
@@ -6364,24 +6342,11 @@ case LLM_ARCH_MOBILELLMPRO:
 
                         layer.rope_freqs = create_tensor(tn(LLM_TENSOR_ROPE_FREQS, "weight", i), {n_rot/2}, TENSOR_NOT_REQUIRED | (i != 0 ? TENSOR_DUPLICATED : 0));
 
-                        if (is_moe_layer) {
-                            int n_ff_exp = hparams.n_ff_exp;
-
-                            layer.ffn_gate_inp  = create_tensor(tn(LLM_TENSOR_FFN_GATE_INP,  "weight", i), {n_embd, n_expert}, 0);
-                            layer.ffn_gate_exps = create_tensor(tn(LLM_TENSOR_FFN_GATE_EXPS, "weight", i), {n_embd,   n_ff_exp, n_expert}, 0);
-                            layer.ffn_down_exps = create_tensor(tn(LLM_TENSOR_FFN_DOWN_EXPS, "weight", i), {  n_ff_exp, n_embd, n_expert}, 0);
-                            layer.ffn_up_exps   = create_tensor(tn(LLM_TENSOR_FFN_UP_EXPS,   "weight", i), {n_embd,   n_ff_exp, n_expert}, 0);
-
-                            // Shared expert
-                            const int64_t n_ff_shexp = n_ff_exp;
-                            layer.ffn_gate_shexp = create_tensor(tn(LLM_TENSOR_FFN_GATE_SHEXP, "weight", i), {    n_embd, n_ff_shexp}, 0);
-                            layer.ffn_down_shexp = create_tensor(tn(LLM_TENSOR_FFN_DOWN_SHEXP, "weight", i), {n_ff_shexp, n_embd    }, 0);
-                            layer.ffn_up_shexp   = create_tensor(tn(LLM_TENSOR_FFN_UP_SHEXP,   "weight", i), {    n_embd, n_ff_shexp}, 0);
-                        } else {
+                        
                             layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
                             layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                             layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
-                        }
+                        
                     }
                 } break;
             default:
@@ -6980,7 +6945,6 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
                 llm = std::make_unique<llm_build_llama>(*this, params);
             } break;
         case LLM_ARCH_LLAMA4:
-        case LLM_ARCH_MOBILELLMPRO:
             {
                 if (hparams.swa_type == LLAMA_SWA_TYPE_NONE) {
                     llm = std::make_unique<llm_build_llama>(*this, params);
@@ -7387,6 +7351,10 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             {
                 llm = std::make_unique<llm_build_pangu_embedded>(*this, params);
             }break;
+        case LLM_ARCH_MOBILELLMPRO:
+            {
+                    llm = std::make_unique<llm_build_llama_iswa>(*this, params);
+            } break;
         default:
             GGML_ABORT("fatal error");
     }
